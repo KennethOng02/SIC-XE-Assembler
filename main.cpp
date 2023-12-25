@@ -7,6 +7,7 @@
 #include <sstream>
 #include <map>
 #include <vector>
+#include <iomanip>
 using namespace std;
 
 struct OP {
@@ -101,7 +102,6 @@ class Assembler {
 
     vector<LINE> LINES;
     vector<int> MODIFY;
-    vector<pair<int, string>> OBJ;
 
     string program_name;
     int starting_address = 0;
@@ -120,15 +120,13 @@ class Assembler {
                 cout << "File cannot be opened." << endl;
                 exit(1);
             }
-
-            // optab_gen();
         }
 
         void run() {
             pass_1();
             pass_2();
             intermediate();
-            generate_object_program();
+            print_obj();
             done();
         }
     
@@ -177,12 +175,9 @@ class Assembler {
             switch (count) {
                 case 1: // type 4 -> RSUB
                     stream >> mnemonic;
-                    label = "*";
-                    target = "*";
                     break;
                 case 2: // type 2 -> CLEAR A
                     stream >> mnemonic >> target;
-                    label = "*";
                     break;
                 case 3: // type 1 -> FIRST STL RETADR
                     stream >> label >> mnemonic >> target;
@@ -207,7 +202,7 @@ class Assembler {
                     res = (str.substr(2, str.size() - 3)).length();
                     break;
                 case 'X': // X'F1' -> size: 1
-                    res = 1; // SUS ??
+                    res = 1;
                     break;
                 default: // maybe an error?
                     cout << "error: unknown byte string format" << endl;
@@ -258,13 +253,13 @@ class Assembler {
                 3. <MNE> <SYM>
                 4. <MNE> #<SYM> -> immediate addressing mode
                 |OPCODE|N|I|X|B|P|E|DISP|
-                |6     | | | | | | |12  |
+                |6     | | | | | | | 12 |
             */
             string str = LINES[i].target; 
             string disp; 
             string objcode;
-            int nixbpe[6] = {0, 0, 0, 0, 0, 0};
-            bool dr = 0;
+            int nixbpe[6] = {0};
+            bool flag = 0;
 
             nixbpe[5] = 0; // not format 4
             
@@ -272,60 +267,70 @@ class Assembler {
             if(str.size() > 2 && str.substr(str.size() - 2) == ",X") { // index addressing mode
                 str = str.substr(0, str.size() - 2); // -> TABLE
                 // |N|I|X|B|P|E|
-                // | | |1| | | |
+                // | | |1| | |0|
                 nixbpe[2] = 1; // index addressing mode
             }
 
-            if(str[0] == '#') {
-                // LDA #0 or LDB #TOTAL
-                // immediate addressing mode
-                // no displacement
-                // |N|I|X|B|P|E|
-                // |0|1| | | | |
-                str = str.substr(1, str.size() - 1); // -> 0 or TOTAL
-                nixbpe[1] = 1;
-                if(SYMTAB.find(str) != SYMTAB.end()) { // TOTAL
-                    disp = int2hex(SYMTAB[str], 3);
-                }else { // 0
-                    disp = str;
-                    dr = 1;
+            // check target perfix
+            switch(str[0]) { // immediate addressing mode
+                case '#': {
+                    // LDA #10 or LDB #TOTAL
+                    // no displacement
+                    // |N|I|X|B|P|E|
+                    // |0|1| | | |0|
+                    str = str.substr(1, str.size() - 1); // -> 0 or TOTAL
+                    nixbpe[1] = 1;
+                    if(SYMTAB.find(str) != SYMTAB.end()) { // TOTAL
+                        disp = int2hex(SYMTAB[str], 3);
+                    }else { // 10
+                        disp = str;
+                        flag = true;
+                    }
+                    break;
                 }
-            }else if(str[0] == '@') { // indirect addressing
-                // |N|I|X|B|P|E|
-                // |1|0| | | | |
-                nixbpe[0] = 1;
-                str = str.substr(1, str.size() - 1);
-                int z = SYMTAB[str], j;
-                for(j = 0; j < LINES.size(); j++)
-                    if(LINES[j].locctr == z)
-                        break;
-                disp = str;
-                str = int2hex(LINES[j].locctr, 3);
-                if(LINES[j].mnemonic != "WORD" && LINES[j].mnemonic != "BYTE" && LINES[j].mnemonic != "RESW" && LINES[j].mnemonic != "RESB") {
-                    str = LINES[j].target;
-                    z = SYMTAB[str];
-                    for (j = 0; j < LINES.size(); j++)
-                        if (LINES[j].label == disp)
+                case '@': { // indirect addressing
+                    // |N|I|X|B|P|E|
+                    // |1|0| | | |0|
+                    nixbpe[0] = 1;
+                    str = str.substr(1, str.size() - 1);
+                    int locctr = SYMTAB[str];
+                    int j;
+                    for(j = 0; j < LINES.size(); j++)
+                        if(LINES[j].locctr == locctr)
                             break;
-                    str = LINES[j].target;
-                    disp = int2hex(SYMTAB[str], 3);
-                }else {
                     disp = str;
+                    str = int2hex(LINES[j].locctr, 3);
+                    if(LINES[j].mnemonic != "WORD" && LINES[j].mnemonic != "BYTE" && LINES[j].mnemonic != "RESW" && LINES[j].mnemonic != "RESB") {
+                        str = LINES[j].target;
+                        locctr = SYMTAB[str];
+                        for (j = 0; j < LINES.size(); j++)
+                            if (LINES[j].label == disp)
+                                break;
+                        str = LINES[j].target;
+                        disp = int2hex(SYMTAB[str], 3);
+                    }else {
+                        disp = str;
+                    }
+                    break;
                 }
-            }else if(str[0] == '=') { // literal =X'05'
-                str = str.substr(3, str.size() - 4); // -> 05
-                dr = 1;
-            }else {
-                // neither indirect nor immediate -> Simple addressing mode
-                // both 1 or both 0
-                // |N|I|X|B|P|E|
-                // |1|1| | | | |
-                disp = int2hex(SYMTAB[str], 3);
-                nixbpe[0] = 1;
-                nixbpe[1] = 1;
+                case '=': { // literal =X'05'
+                    str = str.substr(3, str.size() - 4); // -> 05
+                    flag = true;
+                    break;
+                }
+                default: {
+                    // neither indirect nor immediate -> Simple addressing mode
+                    // both 1 or both 0
+                    // |N|I|X|B|P|E|
+                    // |1|1| | | |0|
+                    disp = int2hex(SYMTAB[str], 3);
+                    nixbpe[0] = 1;
+                    nixbpe[1] = 1;
+                    break;
+                }
             }
 
-            if(dr != 1 && str != "*") {
+            if(!flag && !str.empty()) {
                 int hex_int = hex2int(disp);
                 if (hex_int - PC > -2048 && hex_int - PC < 2047) { // PC relative mode
                     nixbpe[4] = 1; // PC relative mode
@@ -348,62 +353,59 @@ class Assembler {
             return objcode;
         }
 
-        string fmt_4(int i) {
+        string fmt_4(int i) { //hrere
             //  |OPCODE|N|I|X|B|P|E|DISP|
-            //  |6     | | | | | | |12  |
+            //  |6     | | | | | | | 20 |
             string str = LINES[i].target;
-            string mne = LINES[i].mnemonic;
-            string TA = "";
-            int nixbpe[6] = {0, 0, 0, 0, 0, 0};
-            nixbpe[0] = (str[0] == '@');
+            
+            int nixbpe[6] = {0};
+            nixbpe[0] = (str[0] == '@'); // indirect address mode
             nixbpe[1] = (str[0] == '#'); // immediate address mode
-            if (nixbpe[0] == nixbpe[1]) {
-                nixbpe[0] = !nixbpe[0];
-                nixbpe[1] = !nixbpe[1];
-            }
-            nixbpe[2] = (str.size() > 2 && str.substr(str.size() - 2) == ",X") ? 1 : 0;
+            nixbpe[2] = (str.size() > 2 && str.substr(str.size() - 2) == ",X") ? 1 : 0; // index address mode
             nixbpe[3] = 0; // format 4 don't need base relative
             nixbpe[4] = 0; // format 4 don't need pc relative
-            nixbpe[5] = 1; // format 4 duhh
+            nixbpe[5] = 1; // format 4
 
-            if(str[0] == '@' || str[0] == '#')
+            // extract the SYMBOL
+            if(nixbpe[0] || nixbpe[1])
                 str = str.substr(1, str.length() - 1);
 
-            if(str[str.length() - 1] == 'X' && str[str.length() - 2] == ',')
+            if(nixbpe[2]) // have ",X"
                 str = str.substr(0, str.length() - 2);
 
-            if(nixbpe[0] == 1 && nixbpe[1] == 1) {
+            string TA;
+            string locctr;
+            if(!nixbpe[0] && !nixbpe[1]) {
+                nixbpe[0] = 1;
+                nixbpe[1] = 1;
                 // neither indirect nor immediate -> Simple addressing mode
                 // both 1 or both 0
                 // |N|I|X|B|P|E|
-                // |1|1| | | | |
-                string s = int2hex(SYMTAB[str], 5);
-                for (int j = 0; j < LINES.size(); j++) {
-                    if (int2hex(LINES[j].locctr, 5) == s) {
-                        if (nixbpe[2] == 0)
-                            TA = s;
-                        else
-                            TA = int2hex(hex2int(s) + INDX, 5);
-                    }
+                // |1|1| |0|0|1|
+                locctr = int2hex(SYMTAB[str], 5);
+                for(int j = 0; j < LINES.size(); j++) {
+                    if(int2hex(LINES[j].locctr, 5) != locctr) 
+                        continue;
+                    TA = !nixbpe[2] ? locctr : int2hex(hex2int(locctr) + INDX, 5);
                 }
-            }else if(nixbpe[0] == 1 && nixbpe[1] == 0 && nixbpe[2] == 0) {
+            }else if(nixbpe[0] && !nixbpe[1] && !nixbpe[2]) {
                 // |N|I|X|B|P|E|
-                // |1|0| | | | |
-                string s = to_string(SYMTAB[str]);
-                for (int j = 0; j < LINES.size(); j++)
-                    if (to_string(LINES[j].locctr) == s) {
-                        s = LINES[j].target;
-                        for (int k = 0; j < LINES.size(); k++)
-                            if (to_string(LINES[k].locctr) == s)
-                                TA = LINES[k].target;
-                    }
-            }else if (nixbpe[0] == 0 && nixbpe[1] == 1) {
+                // |1|0|0|0|0|1|
+                locctr = to_string(SYMTAB[str]);
+                // find the SYMBOL locctr
+                for(int j = 0; j < LINES.size(); j++) {
+                    if(to_string(LINES[j].locctr) != locctr)
+                        continue;
+
+                    locctr = LINES[j].target;
+                    for(int k = 0; j < LINES.size(); k++)
+                        if(to_string(LINES[k].locctr) == locctr)
+                            TA = LINES[k].target;
+                }
+            }else if(!nixbpe[0] && nixbpe[1]) {
                 // |N|I|X|B|P|E|
                 // |0|1| | | | |
-                if (str[0] < 65)
-                    TA = int2hex(stoi(str), 5);
-                else
-                    TA = int2hex(SYMTAB[str], 5);
+                TA = (str[0] < 65) ? int2hex(stoi(str), 5) : int2hex(SYMTAB[str], 5); // 65 -> 'A' eg. @#+=
             }
 
             string objcode = OPTAB[LINES[i].mnemonic.substr(1)].opcode;
@@ -436,49 +438,54 @@ class Assembler {
         }
 
         string bin2hex(int a, int b, int c, int d) {
-            string s;
+            string hex;
             int sum = 0;
             sum += a * 8;
             sum += b * 4;
             sum += c * 2;
             sum += d * 1;
-            s = int2hex(sum, 1);
-            return s;
+            hex = int2hex(sum, 1);
+            return hex;
         }
 
         void intermediate() {
             for (int i = 0; i < LINES.size(); i++) {
-                if(LINES[i].label == "*") {
-                    if(LINES[i].target.length() == 8) // wtf is this??
+                if(LINES[i].label.empty()) {
+                    if(LINES[i].target.length() == 8)
                         cout << int2hex(LINES[i].locctr, 4) << "\t\t" << LINES[i].mnemonic << "\t" << LINES[i].target << "  " << LINES[i].object_code << endl;
-                    else if(LINES[i].target == "*") // RSUB
+                    else if(LINES[i].target.empty()) // RSUB
                         cout << int2hex(LINES[i].locctr, 4) << "\t\t" << LINES[i].mnemonic << "\t \t  " << LINES[i].object_code << endl;
                     else
                         cout << int2hex(LINES[i].locctr, 4) << "\t\t" << LINES[i].mnemonic << "\t" << LINES[i].target << "\t  " << LINES[i].object_code << endl;
                 }else
                     cout << int2hex(LINES[i].locctr, 4) << "\t" << LINES[i].label << "\t" << LINES[i].mnemonic << "\t" << LINES[i].target << "\t  " << LINES[i].object_code << endl;
-
-                if(LINES[i].object_code.length() != 0)
-                    OBJ.push_back({LINES[i].locctr, LINES[i].object_code});
             }
         }
 
-        void generate_object_program() {
+        void print_obj() {
             freopen("output.txt", "w", stdout);
-            int size = OBJ.size();
             cout << "H^" << program_name << " ^" << int2hex(starting_address, 6) << "^" << int2hex(program_length, 6) << endl;
 
-            for (int i = 0; i < OBJ.size(); i += 5) {
-                long long sum = 0;
-                for (int j = i; j < i + min(size - i, 5); j++)
-                    sum += OBJ[j].second.size() / 2;
-                cout << "T^" << int2hex(OBJ[i].first, 6) << "^" << int2hex(sum, 2);
+            for(int i = 0; i < LINES.size(); i++) {
+                if(LINES[i].mnemonic == "RESW" || LINES[i].mnemonic == "RESB" || LINES[i].mnemonic == "END")
+                    continue;
 
-                for (int j = i; j < i + min(size - i, 5); j++)
-                    cout << "^" << OBJ[j].second;
+                long long sum = 0;
+                int count = 0;
+                for(int j = i; j < LINES.size(); j++) {
+                    if(sum >= 29 || LINES[j].mnemonic == "RESW" || LINES[j].mnemonic == "RESB" || LINES[j].mnemonic == "END")
+                        break;
+                    sum += LINES[j].object_code.size() / 2;
+                    count++;
+                }
+                cout << "T^" << int2hex(LINES[i].locctr, 6) << "^" << int2hex(sum, 2);
+
+                for(int j = 0; j < count; j++)
+                    cout << "^" << LINES[i + j].object_code;
                 cout << endl;
+                i += count - 1;
             }
-            for (int i = 0; i < MODIFY.size(); i++)
+            for(int i = 0; i < MODIFY.size(); i++)
                 cout << "M^" << int2hex(MODIFY[i] + 1, 6) << "^05" << endl;
             cout << "E^" << int2hex(starting_address, 6);
         }
@@ -501,7 +508,7 @@ class Assembler {
 
             while(getline(input_file, line)) {
                 // comment, ignored by assembler
-                if(line[0] == '.' || line == "") 
+                if(line.empty() || line[0] == '.') 
                     continue; 
 
                 // Parse the line
@@ -509,9 +516,12 @@ class Assembler {
 
                 LINES.push_back({LOCCTR, label, mnemonic, target});
 
-                if(label != "*") { // have ASSEMBLER DIRECTIVE, add to SYMBOL TABLE
+                if(!label.empty()) { // have ASSEMBLER DIRECTIVE, add to SYMBOL TABLE
                     if(SYMTAB.find(label) != SYMTAB.end()) {
                         cout << "Error: duplicate label" << endl;
+                        exit(1);
+                    }else if(OPTAB.find(label) != OPTAB.end()) {
+                        cout << "Error: label with the name same as label" << endl;
                         exit(1);
                     }
                     SYMTAB[label] = LOCCTR;
@@ -547,8 +557,7 @@ class Assembler {
             for(int i = 0; i < LINES.size(); i++) {
                 PC = LINES[i + 1].locctr; // get the LOCCTR
 
-                bool fmt4 = (LINES[i].mnemonic)[0] == '+' ? true : false; // get the MNEMONIC
-                int format = OPTAB[LINES[i].mnemonic].format; // get the MNEMONIC INSTRUCTION's format
+                int format = (LINES[i].mnemonic)[0] == '+' ? 4 : OPTAB[LINES[i].mnemonic].format;
 
                 string OBJ_CODE;
                 switch(format) {
@@ -563,13 +572,12 @@ class Assembler {
                         // LDA X -> type 2
                         OBJ_CODE = fmt_3(i);
                         break;
+                    case 4:
+                        OBJ_CODE = fmt_4(i);
+                        if((LINES[i].target)[0] != '#')
+                            MODIFY.push_back(LINES[i].locctr);
+                        break;
                     default:
-                        if(fmt4) { // 一頭霧水
-                            OBJ_CODE = fmt_4(i);
-                            // # 不是immediate value而已嗎？
-                            bool flag = (LINES[i].target)[0] != '#' ? true : false;
-                            if(flag) MODIFY.push_back(LINES[i].locctr);
-                        }
                         break;
                 }
 
